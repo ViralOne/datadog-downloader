@@ -1,4 +1,6 @@
 .env
 *.json
-
+*.ndjson
+*.cursor
+.DS_Store
 node_modules
