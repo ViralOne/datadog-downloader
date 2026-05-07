@@ -83,16 +83,16 @@ async function fetchWithRetry(apiInstance, query, maxRetries = 10) {
             return await apiInstance.listLogsGet(query);
         } catch (e) {
             const status = e.code || e.httpStatusCode || e.status;
-            if (status === 429) {
+            if (status === 429 || status >= 500) {
                 const waitMs = Math.min(1000 * Math.pow(2, attempt), 60000);
-                console.log(chalk.yellow(`Rate limited (429). Waiting ${waitMs / 1000}s before retry (attempt ${attempt + 1}/${maxRetries})...`));
+                console.log(chalk.yellow(`\nHTTP ${status}. Waiting ${waitMs / 1000}s before retry (attempt ${attempt + 1}/${maxRetries})...`));
                 await sleep(waitMs);
             } else {
                 throw e;
             }
         }
     }
-    throw new Error("Max retries exceeded for rate limiting");
+    throw new Error("Max retries exceeded");
 }
 
 // --- Archive format (DD-compatible) ---
