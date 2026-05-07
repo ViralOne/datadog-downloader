@@ -1,6 +1,6 @@
-# DataDog Log Downloader
+# Datadog Log Downloader
 
-Bulk download DataDog logs via the API. Supports flat file export (JSON/NDJSON) and DD-compatible archive format with parallel S3 upload.
+Bulk download Datadog logs via the API and produce Datadog-compatible S3 archives. Supports flat file export (JSON/NDJSON) and the native archive format with parallel S3 upload — ideal for backfilling log archives or migrating historical data.
 
 ## Quick Start
 
@@ -42,7 +42,7 @@ The script only needs `s3:PutObject` permission on your target bucket.
 node index.mjs --query '*' --from 2025-04-06 --to 2025-05-06
 ```
 
-### DD-compatible archive (local)
+### Datadog-compatible archive (local)
 
 ```bash
 node index.mjs --query '*' --from 2025-04-06 --format archive --output logs
@@ -51,8 +51,8 @@ node index.mjs --query '*' --from 2025-04-06 --format archive --output logs
 Produces:
 ```
 logs/
-  dt=20250406/hour=00/archive_143201.0042.a1b2c3d4-....json.gz
-  dt=20250406/hour=01/archive_143205.0012.e5f6g7h8-....json.gz
+  dt=20250406/hour=00/archive_000000.0000.a1b2c3d4-....json.gz
+  dt=20250406/hour=01/archive_000000.0000.e5f6g7h8-....json.gz
   ...
 ```
 
@@ -66,13 +66,29 @@ node index.mjs --query '*' --from 2025-04-06 --format archive --output logs \
   --s3Concurrency 8
 ```
 
-Downloads from DD and uploads to S3 in parallel. By the time the download finishes, most files are already in S3.
+Downloads from Datadog and uploads to S3 in parallel. By the time the download finishes, most files are already in S3.
 
 ### Download from Flex Logs (longer retention)
 
 ```bash
 node index.mjs --query 'service:api' --from 2025-01-01 --storageTier flex --site eu
 ```
+
+## Resuming Downloads
+
+The tool automatically saves a cursor file on crash or Ctrl+C. On the next run with the same `--output`, it resumes from where it left off:
+
+```bash
+# Start a large download
+node index.mjs --query '*' --from 2025-01-01 --format archive --output logs
+
+# Press Ctrl+C to stop — cursor is saved automatically
+
+# Resume — just run the same command again
+node index.mjs --query '*' --from 2025-01-01 --format archive --output logs
+```
+
+To start fresh, delete the cursor file (`<output>.json.cursor`).
 
 ## Options
 
@@ -88,6 +104,7 @@ node index.mjs --query 'service:api' --from 2025-01-01 --storageTier flex --site
 | `--cursor` | Resume from cursor position | — |
 | `--append` | Append to output file (ndjson only) | `false` |
 | `--storageTier` | `indexes`, `online-archives`, or `flex` | — |
+| `--sort` | `timestamp` (oldest first) or `-timestamp` (newest first) | `timestamp` |
 | `--site` | Datadog site (see below) | `datadoghq.com` |
 | `--s3Bucket` | S3 bucket name for upload | — |
 | `--s3Prefix` | S3 key prefix | `""` |
@@ -106,25 +123,33 @@ node index.mjs --query 'service:api' --from 2025-01-01 --storageTier flex --site
 
 ## Archive Format
 
-Matches Datadog's native archive structure:
+Produces archives identical to Datadog's native S3 archive format:
 
 ```
-<prefix>/dt=YYYYMMDD/hour=HH/archive_HHmmss.SSSS.<uuid>.json.gz
+<prefix>/dt=YYYYMMDD/hour=HH/archive_000000.0000.<uuid>.json.gz
 ```
 
-Each `.json.gz` file contains a JSON array of log objects. This is the same format DD's built-in Archive feature writes, so you can:
-- Query with Athena/Spark using the date/hour partitioning
-- Place alongside DD's own archive output in the same bucket
-- Rehydrate back into DD (if using their rehydration feature)
+Each `.json.gz` file contains gzipped NDJSON (one JSON object per line) with this structure:
+
+```json
+{"_id":"...","date":"2025-04-06T12:34:56.789Z","host":"...","service":"...","source":"...","status":"info","tags":[...],"attributes":{...}}
+```
+
+This is the same format Datadog's built-in Archive feature writes, so you can:
+- Place files alongside Datadog's own archive output in the same S3 bucket
+- Query with Athena/Spark using the `dt=`/`hour=` partitioning
+- Rehydrate back into Datadog using their rehydration feature
 
 ## Features
 
-- **Rate limit handling** — Exponential backoff on HTTP 429 (1s → 60s, up to 10 retries)
-- **Crash recovery** — Cursor auto-saved on crash/SIGINT. Resumes automatically on next run.
-- **Streaming archive** — Partitions flush to disk every 5000 logs (low memory for large exports)
+- **Native archive format** — Output matches Datadog's own S3 archive structure exactly (NDJSON, partitioning, naming)
+- **Rate limit handling** — Exponential backoff on HTTP 429/5xx (1s → 60s, up to 10 retries)
+- **Crash recovery** — Cursor auto-saved on crash/SIGINT, resumes automatically on next run
+- **Streaming** — Partitions flush to disk every 5000 logs (constant memory for large exports)
 - **Parallel S3 upload** — Uploads happen concurrently with downloads (configurable concurrency)
 - **Flex Logs support** — `--storageTier flex` for longer-retention data
-- **Multi-region** — All Datadog sites via `--site` flag
+- **Multi-region** — All Datadog sites supported via `--site` flag
+- **Cursor expiry recovery** — Automatically restarts from last known timestamp if cursor expires (HTTP 410)
 
 ## Examples
 
@@ -140,6 +165,7 @@ node index.mjs --query 'service:payments' --from 2025-04-01 --format archive \
 node index.mjs --query '*' --from 2025-04-01 --site eu --format archive \
   --output logs --s3Bucket my-eu-bucket --s3Region eu-central-1 --s3Concurrency 16
 
-# Resume after crash (automatic)
-node index.mjs --query '*' --from 2025-04-01 --format archive --output logs
+# Flex Logs (longer retention tier)
+node index.mjs --query 'env:production' --from 2024-06-01 --storageTier flex \
+  --format archive --output prod-archive --s3Bucket my-logs
 ```

@@ -108,12 +108,24 @@ function getArchiveKey(log) {
     return `dt=${date}/hour=${hour}`;
 }
 
+function toArchiveFormat(row) {
+    const attrs = row.attributes || {};
+    const inner = attrs.attributes || {};
+    return {
+        _id: row.id,
+        date: attrs.timestamp,
+        host: attrs.host,
+        service: attrs.service,
+        source: inner.ddsource || "",
+        status: attrs.status,
+        tags: attrs.tags || [],
+        attributes: inner,
+    };
+}
+
 function generateArchiveFilename() {
-    const now = new Date();
-    const hms = now.toISOString().slice(11, 19).replace(/:/g, "");
-    const ms = String(now.getMilliseconds()).padStart(4, "0");
     const uuid = crypto.randomUUID();
-    return `archive_${hms}.${ms}.${uuid}.json.gz`;
+    return `archive_000000.0000.${uuid}.json.gz`;
 }
 
 // --- S3 upload queue ---
@@ -173,7 +185,7 @@ function flushPartition(partitionKey, logs) {
     const dir = path.join(outDir, partitionKey);
     const filename = generateArchiveFilename();
 
-    const content = JSON.stringify(logs);
+    const content = logs.map((l) => JSON.stringify(l)).join("\n");
     const gz = zlib.gzipSync(content);
 
     // Write locally
@@ -196,7 +208,7 @@ function processLog(row) {
     if (argv.format === "archive") {
         const key = getArchiveKey(row);
         if (!archiveBuffers[key]) archiveBuffers[key] = [];
-        archiveBuffers[key].push(row);
+        archiveBuffers[key].push(toArchiveFormat(row));
         // Stream: flush partition when it hits threshold
         if (archiveBuffers[key].length >= FLUSH_THRESHOLD) {
             flushPartition(key, archiveBuffers[key]);
