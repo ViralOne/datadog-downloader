@@ -123,15 +123,26 @@ let uploadsDone = 0;
 let uploadsFailed = 0;
 let draining = false;
 
-async function uploadToS3(key, buffer) {
-    const cmd = new PutObjectCommand({
-        Bucket: argv.s3Bucket,
-        Key: key,
-        Body: buffer,
-        ContentType: "application/json",
-        ContentEncoding: "gzip",
-    });
-    await s3.send(cmd);
+async function uploadToS3(key, buffer, retries = 3) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const cmd = new PutObjectCommand({
+                Bucket: argv.s3Bucket,
+                Key: key,
+                Body: buffer,
+                ContentType: "application/json",
+                ContentEncoding: "gzip",
+            });
+            await s3.send(cmd);
+            return;
+        } catch (e) {
+            if (attempt < retries) {
+                await sleep(1000 * Math.pow(2, attempt));
+            } else {
+                throw e;
+            }
+        }
+    }
 }
 
 function drainQueue() {
