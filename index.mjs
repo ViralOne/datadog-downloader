@@ -206,6 +206,8 @@ function oneYearAgo() {
 }
 
 // Load saved cursor if available and no explicit cursor provided
+let savedLastTimestamp = null;
+
 function loadSavedCursor() {
     if (argv.cursor) return argv.cursor;
     if (fs.existsSync(CURSOR_FILE)) {
@@ -214,6 +216,7 @@ function loadSavedCursor() {
             console.log(chalk.yellow(`Found saved cursor from ${saved.timestamp} (${saved.count} logs previously downloaded)`));
             console.log(chalk.yellow(`   Resuming from saved position. Delete ${CURSOR_FILE} to start fresh.`));
             totalCount = saved.count || 0;
+            savedLastTimestamp = saved.lastTimestamp || null;
             return saved.cursor;
         } catch { /* ignore corrupt file */ }
     }
@@ -224,6 +227,7 @@ async function getLogs() {
     const startCursor = loadSavedCursor();
     let nextPage = startCursor;
     let page = 0;
+    let lastLogTimestamp = savedLastTimestamp;
 
     const params = {
         filterQuery: argv.query,
@@ -243,17 +247,38 @@ async function getLogs() {
     do {
         page++;
         const query = nextPage ? { ...params, pageCursor: nextPage } : params;
-        const result = await fetchWithRetry(apiInstance, query);
+
+        let result;
+        try {
+            result = await fetchWithRetry(apiInstance, query);
+        } catch (e) {
+            const status = e.code || e.httpStatusCode || e.status;
+            if (status === 410 && lastLogTimestamp) {
+                // Cursor expired — restart from last known timestamp
+                console.log(chalk.yellow(`\nCursor expired (410). Restarting from ${lastLogTimestamp}...`));
+                nextPage = null;
+                params.filterFrom = new Date(lastLogTimestamp);
+                if (fs.existsSync(CURSOR_FILE)) fs.unlinkSync(CURSOR_FILE);
+                continue;
+            }
+            throw e;
+        }
 
         const logs = result.data || [];
         logs.forEach((row) => processLog(row));
 
+        // Track last log timestamp for restart on cursor expiry
+        if (logs.length > 0) {
+            const last = logs[logs.length - 1];
+            lastLogTimestamp = last.attributes?.timestamp || last.attributes?.attributes?.timestamp;
+        }
+
         nextPage = result?.meta?.page?.after || null;
         lastCursor = nextPage;
 
-        // Save cursor periodically (every 10 pages)
+        // Save cursor + timestamp periodically (every 10 pages)
         if (page % 10 === 0 && lastCursor) {
-            fs.writeFileSync(CURSOR_FILE, JSON.stringify({ cursor: lastCursor, count: totalCount, timestamp: new Date().toISOString() }));
+            fs.writeFileSync(CURSOR_FILE, JSON.stringify({ cursor: lastCursor, count: totalCount, lastTimestamp: lastLogTimestamp, timestamp: new Date().toISOString() }));
         }
 
         // Progress display
