@@ -24,6 +24,7 @@ const argv = yargs(hideBin(process.argv))
     .option("cursor", { type: "string", describe: "Resume from cursor position" })
     .option("append", { type: "boolean", default: false, describe: "Append to output file" })
     .option("storageTier", { type: "string", choices: ["indexes", "online-archives", "flex"], describe: "Storage tier (flex for Flex Logs)" })
+    .option("sort", { type: "string", default: "timestamp", choices: ["timestamp", "-timestamp"], describe: "Sort order: timestamp (oldest first) or -timestamp (newest first)" })
     .option("site", { type: "string", describe: "Datadog site (e.g. datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com, ddog-gov.com)" })
     .option("s3Bucket", { type: "string", describe: "S3 bucket for archive upload" })
     .option("s3Prefix", { type: "string", default: "", describe: "S3 key prefix (e.g. logs/archive)" })
@@ -235,6 +236,7 @@ async function getLogs() {
         filterFrom: argv.from ? new Date(argv.from) : oneYearAgo(),
         filterTo: argv.to ? new Date(argv.to) : new Date(),
         pageLimit: Math.min(argv.pageSize, 5000),
+        sort: argv.sort,
     };
 
     if (argv.storageTier) {
