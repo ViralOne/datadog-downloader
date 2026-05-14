@@ -185,7 +185,13 @@ function flushPartition(partitionKey, logs) {
     const dir = path.join(outDir, partitionKey);
     const filename = generateArchiveFilename();
 
-    const content = logs.map((l) => JSON.stringify(l)).join("\n");
+    // Stream-build the gzipped content to avoid a large intermediate string
+    const chunks = [];
+    for (let i = 0; i < logs.length; i++) {
+        chunks.push(JSON.stringify(logs[i]));
+        if (i < logs.length - 1) chunks.push("\n");
+    }
+    const content = chunks.join("");
     const gz = zlib.gzipSync(content);
 
     // Write locally
@@ -196,6 +202,16 @@ function flushPartition(partitionKey, logs) {
     if (s3) {
         const s3Key = [argv.s3Prefix, partitionKey, filename].filter(Boolean).join("/");
         enqueueUpload(s3Key, gz);
+    }
+}
+
+// Flush ALL partitions that have any data (memory pressure relief)
+function flushAllPartitions() {
+    for (const key of Object.keys(archiveBuffers)) {
+        if (archiveBuffers[key].length > 0) {
+            flushPartition(key, archiveBuffers[key]);
+        }
+        delete archiveBuffers[key];
     }
 }
 
@@ -212,7 +228,7 @@ function processLog(row) {
         // Stream: flush partition when it hits threshold
         if (archiveBuffers[key].length >= FLUSH_THRESHOLD) {
             flushPartition(key, archiveBuffers[key]);
-            archiveBuffers[key] = [];
+            delete archiveBuffers[key];
         }
     } else if (argv.format === "ndjson") {
         if (writer === null) {
@@ -306,6 +322,11 @@ async function getLogs() {
             fs.writeFileSync(CURSOR_FILE, JSON.stringify({ cursor: lastCursor, count: totalCount, lastTimestamp: lastLogTimestamp, timestamp: new Date().toISOString() }));
         }
 
+        // Flush all archive partitions periodically to cap memory usage
+        if (argv.format === "archive" && page % 50 === 0) {
+            flushAllPartitions();
+        }
+
         // Progress display
         const s3Status = s3 ? ` | S3: ${uploadsDone} uploaded` : "";
         process.stdout.write(`\r${chalk.green("+")} Page ${page} | ${chalk.bold(totalCount)} logs downloaded${s3Status}${lastCursor ? " | fetching next..." : " | done"}`);
@@ -326,12 +347,7 @@ async function getLogs() {
 
     // Flush remaining archive partitions
     if (argv.format === "archive") {
-        const keys = Object.keys(archiveBuffers).sort();
-        for (const key of keys) {
-            if (archiveBuffers[key].length > 0) {
-                flushPartition(key, archiveBuffers[key]);
-            }
-        }
+        flushAllPartitions();
         // Wait for all S3 uploads to finish
         if (s3) {
             console.log(chalk.cyan("Waiting for S3 uploads to complete..."));
